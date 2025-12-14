@@ -1,0 +1,6 @@
+Credenciales_adm
+cdrada contrasenia: ABCabc123.
+
+
+URL
+https://www.pythonanywhere.com/login/
