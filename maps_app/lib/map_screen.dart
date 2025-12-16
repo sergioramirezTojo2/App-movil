@@ -35,7 +35,7 @@ class _MapScreenState extends State<MapScreen> {
     super.initState();
     _loadLocations();
   }
-
+//RNF05: Se añade documentacion para mejorar la amntenibilidad del codigo.
   Future<void> _loadLocations() async {
     final prefs = await SharedPreferences.getInstance();
     final locationsJson = prefs.getStringList('locations');
@@ -101,6 +101,7 @@ class _MapScreenState extends State<MapScreen> {
 
   @override
   Widget build(BuildContext context) {
+    //RF06: LOGICA PARA LA NAVEGACION DEL MAPA.
     return Scaffold(
       appBar: AppBar(
         title: Text("Mapa guapardo"),
