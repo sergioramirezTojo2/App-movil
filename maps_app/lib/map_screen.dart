@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:shared_preferences_android/shared_preferences_android.dart';
-import 'location_model.dart';
+import 'services/api_service.dart';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
@@ -11,112 +10,191 @@ class MapScreen extends StatefulWidget {
 }
 
 class _MapScreenState extends State<MapScreen> {
-  GoogleMapController? _controller; //se inicia en nulo cuando carga se guarda aqui lo del mapa
-  // queda así para hacer otras cosas luego
+  GoogleMapController? _controller;
+  final CameraPosition _initialPosition =
+      const CameraPosition(target: LatLng(-17.783179, -63.182218), zoom: 18);
 
-  final CameraPosition _initialPosition = CameraPosition(
-    target: LatLng(-17.783279, -63.182174),
-    zoom: 10,
-  );
-
-  final Set<Marker> _markers = {
-    Marker(
-      markerId: MarkerId("PepitoDaigual"),
-      position: LatLng(-17.783279, -63.182174),
-      infoWindow: InfoWindow(title: "Mi Restaurante")
-    )
-    //marcador de ubicación
-  };
-
-  List<Location> _locations = [];
+  Set<Marker> _markers = {};
+  List<Map<String, dynamic>> _puntos = [];
+  bool _huboError = false; // bandera para controlar Snackbar de error
 
   @override
   void initState() {
     super.initState();
-    _loadLocations();
+    _cargarPuntos();
   }
 
-  Future<void> _loadLocations() async {
-    final prefs = await SharedPreferences.getInstance();
-    final locationsJson = prefs.getStringList('locations');
-    if (locationsJson != null) {
-      _locations = locationsJson.map((json) => Location.fromJson(json as Map<String, dynamic>)).toList();
+  // ======================================
+  // Cargar todos los puntos desde backend
+  // ======================================
+  Future<void> _cargarPuntos() async {
+    try {
+      final data = await ApiService.obtenerPuntos(); // Trae datos del backend
+
       setState(() {
-        _markers = _locations.map((location) => Marker(
-          markerId: MarkerId(location.toString()),
-          position: LatLng(location.latitude, location.longitude),
-          infoWindow: InfoWindow(title: location.title),
-        )).toSet();
+        _puntos = data;
+
+        _markers = data.map((p) {
+          return Marker(
+            markerId: MarkerId(p['nombre']),
+            position: LatLng(p['lat'], p['lng']),
+            infoWindow: InfoWindow(title: p['nombre']),
+          );
+        }).toSet();
+
+        _huboError = false; // Resetear flag si carga bien
       });
+    } catch (e) {
+      // Solo mostrar Snackbar si hay error real de conexión
+      if (!_huboError) {
+        _huboError = true;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("PROBLEMA DE CONEXION")),
+        );
+      }
     }
   }
 
-  Future<void> _saveLocations() async {
-    final prefs = await SharedPreferences.getInstance();
-    final locationsJson = _locations.map((location) => location.toJson()).toList();
-    await prefs.setStringList('locations', locationsJson.map((json) => json.toString()).toList());
-  }
+  // ===========================
+  // Agregar un punto nuevo
+  // ===========================
+  Future<void> _agregarPunto(LatLng latLong) async {
+    TextEditingController _textController = TextEditingController();
 
-  void addMarker(LatLng latLong) async {
-    TextEditingController _textController = TextEditingController();  //capturar el texto textfiles
-    String? title = await showDialog<String>(
+    String? nombre = await showDialog<String>(
       context: context,
-      builder: (BuildContext context) {
+      builder: (context) {
         return AlertDialog(
-          title: Text("Pon un título"),
+          title: const Text("Añade un título"),
           content: TextField(
             controller: _textController,
-            decoration: InputDecoration(hintText: "Restaurante LA CASONA"),
+            decoration: const InputDecoration(
+              hintText: "Nombre de referencia...",
+            ),
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.of(context).pop(null), child: Text("Cancelar")),
-            TextButton(onPressed: () => Navigator.of(context).pop(_textController.text), child: Text("Guardar")),
+            TextButton(
+              onPressed: () => Navigator.pop(context, null),
+              child: const Text("Cancelar"),
+            ),
+            TextButton(
+              onPressed: () =>
+                  Navigator.pop(context, _textController.text.trim()),
+              child: const Text("Guardar"),
+            ),
           ],
         );
       },
     );
 
-    if (title != null && title.isNotEmpty) {
-      setState(() {
-        final newLocation = Location(latitude: latLong.latitude, longitude: latLong.longitude, title: title);
-        _locations.add(newLocation);
-        _markers.add(Marker(
-          markerId: MarkerId(latLong.toString()),
-          position: latLong,
-          infoWindow: InfoWindow(title: title),
-        ));
-      });
-      _saveLocations();
+    if (nombre != null && nombre.isNotEmpty) {
+      bool ok = await ApiService.guardarPunto(
+          latLong.latitude, latLong.longitude, nombre);
+
+      if (ok) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Punto guardado correctamente")),
+        );
+        _cargarPunto(nombre, latLong);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Error al guardar el punto")),
+        );
+      }
     }
   }
 
-  void removeMarker(MarkerId markerId) {
+  void _cargarPunto(String nombre, LatLng latLong) {
     setState(() {
-      final locationToRemove = _locations.firstWhere((location) => location.toString() == markerId.value);
-      _locations.remove(locationToRemove);
-      _markers.removeWhere((marker) => marker.markerId.value == markerId.value);
+      _markers.add(Marker(
+          markerId: MarkerId(nombre),
+          position: latLong,
+          infoWindow: InfoWindow(title: nombre)));
+      _puntos.add({
+        'nombre': nombre,
+        'lat': latLong.latitude,
+        'lng': latLong.longitude,
+      });
     });
-    _saveLocations();
+  }
+
+  // ===========================
+  // Eliminar punto
+  // ===========================
+  Future<void> _eliminarPunto(String nombre) async {
+    bool ok = await ApiService.eliminarPunto(nombre);
+    if (ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Punto '$nombre' eliminado")),
+      );
+      setState(() {
+        _markers.removeWhere((marker) => marker.markerId.value == nombre);
+        _puntos.removeWhere((punto) => punto['nombre'] == nombre);
+      });
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Error al eliminar '$nombre'")),
+      );
+    }
+  }
+
+  // ===========================
+  // Centrar mapa en ubicación
+  // ===========================
+  void _irAUbicacion(LatLng latLong) {
+    _controller?.animateCamera(CameraUpdate.newLatLng(latLong));
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text("Mapa guapardo"),
+        title: const Text("MAPA APP"),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _cargarPuntos,
+          ),
+        ],
+      ),
+      drawer: Drawer(
+        child: Column(
+          children: [
+            const DrawerHeader(
+              child: Text("Puntos de Interés",
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+            ),
+            Expanded(
+              child: ListView.builder(
+                itemCount: _puntos.length,
+                itemBuilder: (context, index) {
+                  final p = _puntos[index];
+                  return ListTile(
+                    leading: const Icon(Icons.location_on),
+                    title: Text(p['nombre'] ?? 'Sin nombre'),
+                    subtitle: Text(
+                        "(${p['lat']?.toStringAsFixed(4) ?? '0'}, ${p['lng']?.toStringAsFixed(4) ?? '0'})"),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.delete, color: Colors.red),
+                      onPressed: () => _eliminarPunto(p['nombre']),
+                    ),
+                    onTap: () {
+                      _irAUbicacion(LatLng(p['lat'], p['lng']));
+                      Navigator.pop(context);
+                    },
+                  );
+                },
+              ),
+            )
+          ],
+        ),
       ),
       body: GoogleMap(
         initialCameraPosition: _initialPosition,
-        onMapCreated: (controller) {
-          _controller = controller;
-        },
-        mapType: MapType.normal, //modo satélite ciudad satelital
+        onMapCreated: (controller) => _controller = controller,
+        mapType: MapType.normal,
         markers: _markers,
-        onTap: (LatLng) => addMarker(LatLng),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _saveLocations,
-        child: Icon(Icons.save),
+        onTap: _agregarPunto,
       ),
     );
   }
